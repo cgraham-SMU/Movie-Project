@@ -1,0 +1,442 @@
+---
+title: 'MAST 6251: HW2 - Movies'
+author: Chris Graham(31540773), Yan Li(48081999),Pinhsuan Wu(48079490),Lifen Zeng(48082142),
+  Wenjie Ni(48072067)
+date: "11/20/2019"
+always_allow_html: true
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = FALSE,include=FALSE}
+
+# Load necessary packages
+
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(GGally)
+library(lmtest)
+library(stringr)
+library(corrplot)
+library(stringr)
+library(recommenderlab)
+library(data.table)
+library(tidyr)
+library(DT)
+library(knitr)
+library(grid)
+library(gridExtra)
+library(qgraph)
+library(methods)
+library(Matrix)
+library(car)
+library(stats)
+library(kableExtra)
+library(formattable)
+library(scales)
+
+# Import datasets
+credits <- read_csv("C:/Users/cg524/OneDrive/Desktop/MSBA 2020/MAST 6251/RProject - MAST 6251/HW 2/credits.csv")
+keywords <- read_csv("C:/Users/cg524/OneDrive/Desktop/MSBA 2020/MAST 6251/RProject - MAST 6251/HW 2/keywords.csv")
+movies <- read_csv("C:/Users/cg524/OneDrive/Desktop/MSBA 2020/MAST 6251/RProject - MAST 6251/HW 2/movies_metadata.csv")
+rating <- read_csv("C:/Users/cg524/OneDrive/Desktop/MSBA 2020/MAST 6251/RProject - MAST 6251/HW 2/ratings.csv")
+
+```
+
+
+This assignment is split into three parts:
+
+* **Part I:** Upload the datasets and merge.
+* **Part II:** Perform EDA analysis.
+* **Part III:** See if we can find any correlations and observe our findings!
+* **Part IV:** Summary and conclusion
+* **Part V:** Appendix
+
+
+### Part I: Merging Datasets
+
+Our dataset consisted of four files. The files of interest we wish to use for this excercise are `ratings.csv`, `movies_metadata.csv` and `credits.csv`. All three of these files are linked via movie_id. We will be pulling ratings information from `ratings.csv`, cast information from `credits.csv` and movie information from `movies_metadata.csv`. Before merging the datasets we will be adding two dummy variables to `ratings.csv`:
+  * mean_rating - this will provide us with a single rating value per movie
+  * label - this will provide us with a binary indicator whether a movie is "good" or "bad"
+We will also be parsing the `credits.csv` as the cast information is currently unreadable in its original format. Let's go!
+
+```{r, echo = FALSE,include=FALSE}
+
+## Creation of mean_rating for ratings.csv; will provide us with a single value per movie. 
+
+rating <- rating %>%
+  group_by(movieId) %>%
+  summarize(mean_rating = round(mean(rating),2))
+rating <- data.frame(rating)
+
+## Creation of "label" to provide us with a binary indicator of whether a movie is "good" or "bad"
+
+rating$label<-ifelse(rating$mean_rating>=3.25,1,0) 
+
+```
+
+```{r, echo = FALSE,include=FALSE}
+
+## Parsing credit.csv to pull out cast names
+
+parse_cast <- function(cast_text) {
+  text <- 
+    sub("\\?\\$\\?", "",    #drop the first one
+        gsub("\'|\"|\\[|\\]|\\{|\\}|,", "",
+             gsub("\'cast_id\':|\'character\':|\'credit_id\':|\'gender\':|\'id\':|\'name\':|\'order\':|\'profile_path\':", 
+                  "?$?", 
+                  cast_text)
+        )
+    )
+  
+  data <- data.frame(matrix(
+    trimws(unlist(
+      strsplit(text, "\\?\\$\\?")
+    )), 
+    ncol = 8, byrow = TRUE), stringsAsFactors = FALSE)
+  
+  names(data) <- c("cast_id", "character", "credit_id", "gender", "id", "name", "order", "profile_path")
+  data$order <- as.numeric(data$order)
+  
+  return(data %>% select(id, name))
+}
+
+num_batches <- 50
+batch_interval <- ceiling(nrow(credits) / num_batches)
+batch_brackets <- 0:num_batches * batch_interval
+batch_brackets[num_batches+1] <- nrow(credits)
+batch_brackets[1] <- 1
+
+cast_data <- data.frame()
+for(b_i in 1:num_batches){
+  
+  batch_data <- data.frame()
+  for(b2_i in batch_brackets[b_i]:(batch_brackets[b_i+1]-1)){
+    #print(b2_i)
+    this_cast <- parse_cast(credits$cast[b2_i])
+    if(nrow(this_cast) > 0){
+      this_cast$movie_id <- as.character(credits$id[b2_i])
+      batch_data <- rbind(batch_data, this_cast)
+    }
+  }
+  cast_data <- rbind(cast_data, batch_data)
+  #print(paste0("    done batch ", b_i))
+}
+```
+
+
+Let's take a peek on how everything turned out:
+
+`rating.csv`
+
+```{r, echo=FALSE}
+head(rating,3)
+```
+
+`credits.csv`
+
+```{r, echo=FALSE}
+#### Credits.csv
+head(cast_data,3)
+```
+
+Looking good! Now all that is left is to join the data and choose our variables of interest. 
+
+```{r, echo = FALSE,include=FALSE}
+## Join the cast with movies
+cast_data$movie_id <- as.numeric(cast_data$movie_id)
+comdata <- 
+  left_join(cast_data, 
+            movies %>% select(id, title,genres,revenue,budget,runtime,vote_count),
+            by=c("movie_id" = "id"))
+summary(comdata)
+
+## Join new cast and movie combo with ratings
+com_data1 <- comdata %>% 
+  dplyr::left_join(rating, by=c("movie_id" = "movieId"))
+
+## Choose variables of interest 
+com_data2 <- com_data1[c("movie_id","title","name","budget", "revenue", "runtime", "vote_count", "mean_rating","label")]
+
+## Let's only keep the leading actor per movie to splice this down a little
+com_data2 <- com_data2[match(unique(com_data2$movie_id), com_data2$movie_id),]
+
+```
+
+Now let's look at our finalized dataset after our join:
+
+`Com_Data`
+
+```{r, echo=FALSE}
+#### Joined Dataset
+head(com_data2,3)
+```
+
+### Part II: EDA
+
+Our EDA will be fairly standard for this dataset. We will be detecting outliers in our numeric variables, converting those outlier values to missing values and then removing all rows with missing values. There are also a fair amount of 0 values in our dataset and since this will heavily skew our distributions for the numeric variables in question we will be removing those as well. Here we go!
+
+```{r, echo = FALSE,include=FALSE}
+### Detect missing values 
+summary(com_data2)
+
+### Detect outliers and convert to missing values 
+outvars <- c("budget", "revenue", "runtime", "vote_count")
+com_data2[, outvars] <- data.frame(lapply(com_data2[, outvars], function(x){
+  ifelse((x < 0) | x > (mean(x, na.rm = TRUE)+3 * sd(x, na.rm = TRUE)), NA, x)
+}))
+boxplot(com_data2[,outvars])
+summary(com_data2)
+
+### Remove missing values 
+com_data2 <- na.omit(com_data2)
+
+### Check boxplots 
+boxplot(com_data2$budget)
+boxplot(com_data2$revenue)
+boxplot(com_data2$runtime)
+boxplot(com_data2$vote_count)
+
+### Remove 0 values 
+com_data2 <- filter(com_data2, budget > 0, revenue > 0, runtime > 0)
+```
+
+```{r, echo = FALSE,include=FALSE}
+#### EDA Dataset
+glimpse(com_data2)
+```
+
+How is our post - EDA dataset looking? Let's take a look at the distributions of our numeric variables:
+
+```{r, echo = FALSE}
+
+p1 <- ggplot(data=com_data2,aes(revenue)) + geom_histogram(color="darkblue", fill="lightblue",bins = 30) + labs(title="Histogram of Revenue")
+## left distributed
+p2 <- ggplot(data=com_data2,aes(budget)) + geom_histogram(color="darkgreen", fill="lightgreen",bins=30) + labs(title="Histogram of Budget")
+## left skewed
+p3 <- ggplot(data=com_data2,aes(runtime)) + geom_histogram(color="darkblue", fill="lightsteelblue4",bins=30) + labs(title="Histogram of Runtime")
+## normally distributed
+p4 <- ggplot(data=com_data2,aes(mean_rating)) + geom_histogram(color="grey20", fill="cadetblue3",bins=30) + labs(title="Histogram of Ratings")
+## normally distributed 
+
+grid.arrange(p1,p2,p3,p4)
+```
+
+A little skewed but definitely manageable. We are now ready for Part III!
+
+### Part III: Observations
+
+What we decided to observe was whether the `Budget`, `Revenue` or `Runtime` significantly influenced the eventual rating of movies in our dataset. Prior to running our analysis we believed that `Revenue` of a movie would be highly influential in its rating as successful movies are usually well liked by their movie-goers. We understood that some endogeniety could occur from this assumption so we had to be careful! Let's run our regression:
+
+```{r, echo = FALSE,include=FALSE}
+##Regression model
+reg1 <- lm(mean_rating~budget+revenue+runtime,data=com_data2)
+summary(reg1)
+
+##Diagnostic test, non constant variance and non-linear
+plot(reg1,which=1)
+
+##Log regression model on the dependent variable
+reg2 <- lm(log(mean_rating)~budget+revenue+runtime,data=com_data2)
+summary(reg2)
+
+##Diagnostic test, now linear and constant variance with 3 outliers
+plot(reg2,which=1)
+
+##Remove outliers
+com_data2 <- com_data2[-c(981,999,431),]
+
+##Final Model
+reg3 <- lm(log(mean_rating)~budget+revenue+runtime,data=com_data2)
+summary(reg3)
+plot(reg3,which=1)
+```
+
+Let's observe our results and come to a conclusion about our relationships:
+
+`Coefficients`
+
+```{r, echo = FALSE}
+coef <- reg3$coefficients
+round(coef,2)
+```
+
+`P-Values`
+
+```{r, echo = FALSE}
+pval <- summary(reg3)$coefficients[,4]
+round(pval,2)
+```
+
+Overall our model is **not** statistically significant as we are getting an R-squared of only 0.2%. Therefore we cannot make any concrete determinations on whether `Budget`, `Revenue` or `Runtime` truly have any significant impact on a movie's future rating in our dataset. Let's confirm by looking at our most statistically significant variable of the three (`Budget`) in linear form:
+
+```{r, echo = FALSE,include=FALSE}
+
+options(scipen=10000000)
+library(scales)
+
+get_cor <- function(df){
+    m <- cor(df$x,df$y, use="pairwise.complete.obs");
+    eq <- substitute(italic(r) == cor, list(cor = format(m, digits = 2)))
+    as.character(as.expression(eq));                 
+}
+
+## Revenue
+
+com_data2 %>% 
+  filter(revenue >= 1e+6) %>% 
+  ggplot(aes(revenue, mean_rating)) + stat_bin_hex(bins = 50) + scale_fill_distiller(palette = "Spectral") + 
+  stat_smooth(method = "lm", color = "orchid", size = 2) +
+  scale_x_continuous(label=dollar_format()) + 
+  annotate("text", x = 500000, y = 1, label = get_cor(data.frame(x = com_data2$revenue, y = com_data2$mean_rating)), parse = TRUE, color = "black", size = 3)
+
+## Budget 
+
+com_data2 %>% 
+  filter(budget >= 1e+6) %>% 
+  ggplot(aes(budget, mean_rating)) + stat_bin_hex(bins = 50) + scale_fill_distiller(palette = "Spectral") + 
+  stat_smooth(method = "lm", color = "orchid", size = 2) +
+    scale_x_continuous(label=dollar_format()) + 
+  annotate("text", x = 250000, y = 1, label = get_cor(data.frame(x = com_data2$budget, y = com_data2$mean_rating)), parse = TRUE, color = "black", size = 3)
+
+## Runtime
+
+com_data2 %>% 
+  filter(runtime <= 500) %>% 
+  ggplot(aes(runtime, mean_rating)) + stat_bin_hex(bins = 50) + scale_fill_distiller(palette = "Spectral") + 
+  stat_smooth(method = "lm", color = "orchid", size = 2) +
+  annotate("text", x = 100, y = 1, label = get_cor(data.frame(x = com_data2$runtime, y = com_data2$mean_rating)), parse = TRUE, color = "black", size = 3)
+
+```
+
+```{r, echo = FALSE,include=FALSE}
+
+## Corrplot
+
+com_vars <- com_data2 %>% 
+  select(one_of(c("label","movie_id","budget", "revenue", "runtime", "mean_rating"))) %>% 
+  as.matrix()
+
+corrplot(cor(com_vars, use = 'pairwise.complete.obs'), type = "lower")
+```
+
+```{r, fig.height=4,fig.width=6, echo=FALSE, results='hide',message=FALSE}
+
+## Runtime
+
+com_data2 %>% 
+  filter(runtime <= 500) %>% 
+  ggplot(aes(runtime, mean_rating)) + stat_bin_hex(bins = 50) + scale_fill_distiller(palette = "Spectral") + 
+  stat_smooth(method = "lm", color = "orchid", size = 2) +
+  annotate("text", x = 100, y = 1, label = get_cor(data.frame(x = com_data2$runtime, y = com_data2$mean_rating)), parse = TRUE, color = "black", size = 3)
+
+```
+
+Unfortunately we just do not have much there. So we can not make any accurate predictions moving forward. But let's look at some additional components of the dataset so we can have a better understanding of what it is telling us!
+
+#### What are our highest grossing movies and actors? Do they have high ratings? Let's see!
+
+First we will need to add a dummy variable `Gross` to our dataset which is simple calculation of (Revenue - Budget). Let's look at our most profitable players:
+
+```{r, fig.height=4,fig.width=6, echo=FALSE, results='hide',message=FALSE}
+
+com_data2$gross = com_data2$revenue - com_data2$budget
+
+gross_movie <- com_data2 %>% select(title,gross) %>% filter(gross>0)%>% head(5) %>%    
+  ggplot(aes(reorder(title,gross),gross,fill=title))+
+  geom_bar(stat="identity") +
+  coord_flip()+
+  theme(axis.text.x = element_text(angle=90),plot.title=element_text(color="Red",face="italic"),legend.position="none")+
+  scale_y_continuous(labels=dollar_format())+
+  labs(x="",y="Total Gross in $",title="Highest Grossing Movies - Top 5")
+
+gross_actor <- com_data2 %>% select(name,gross) %>% filter(gross>0) %>% head(5) %>%    
+  ggplot(aes(reorder(name,gross),gross,fill=name))+
+  geom_bar(stat="identity") +
+  coord_flip()+
+  theme(axis.text.x = element_text(angle=90),plot.title=element_text(color="Red",face="italic"),legend.position="none")+
+  scale_y_continuous(labels=dollar_format())+
+  labs(x="",y="Total Gross in $",title="Highest Grossing Actors - Top 5")
+
+gross_movie
+gross_actor
+
+```
+
+Sense and Sensibility and Kate Winslet reign supreme. But do they have good ratings? Let's take a look. 
+
+`Movies` 
+
+```{r, echo = FALSE}
+
+com_data2$gross2 <- accounting(com_data2$gross)
+
+table_movies <- com_data2 %>% select(title,gross2,mean_rating) %>% filter(gross2 >0) %>% head(5) %>% arrange(desc(gross2))
+table_movies
+```
+
+`Actors` 
+
+```{r, echo = FALSE}
+
+table_actor <- com_data2 %>% select(name,gross2, mean_rating) %>% filter(gross2 >0) %>% head(5) %>% arrange(desc(gross2)) 
+table_actor
+
+```
+
+### Part IV: Conclusion
+
+That's it! When we started the project we thought that we were going to uncover some statistically significant indicators of movie ratings but unfortunately our analysis told us otherwise. However we did find some interesting facts! According to our dataset, a movie or actor does not need a particularly good rating in order to be commercially successful. We will leave you with some words to live by: "Not everyone likes me but not everyone matters". 
+
+### Part V: Appendix
+
+#### How does our regression look in a corrplot format?
+
+We wanted to include this into our original report but ran out of room. We decided that the linear graph of budget was more aesthetically pleasing. 
+
+```{r, fig.height=4,fig.width=6, echo=FALSE, results='hide',message=FALSE}
+## Corrplot
+
+com_vars <- com_data2 %>% 
+  select(one_of(c("label","movie_id","budget", "revenue", "runtime", "mean_rating"))) %>% 
+  as.matrix()
+
+corrplot(cor(com_vars, use = 'pairwise.complete.obs'), type = "lower")
+
+```
+
+
+#### What are our highest ranking movies and actors?
+
+We are going to only look at variables with vote counts over 100 so we can keep our analysis focused on statistically significant players.
+
+```{r, fig.height=4,fig.width=6, echo=FALSE, results='hide',message=FALSE}
+
+high_movies <- com_data2 %>% filter(vote_count > 100) %>% top_n(20, wt=mean_rating) %>%
+        ggplot(aes(x=reorder(title, mean_rating), y=mean_rating)) +
+        geom_bar(stat='identity', fill="blue") + coord_flip(y=c(0,5)) +
+        labs(x="", y="Average Rating") +
+        geom_text(aes(label=mean_rating), hjust=-0.1, size=3) +
+        scale_y_continuous(breaks=seq(0, 5, by=1)) +
+        geom_text(aes(label=vote_count), y=0.4, size=3, col="yellow")
+
+high_actors <- com_data2 %>% filter(vote_count > 100) %>% top_n(20, wt=mean_rating) %>%
+        ggplot(aes(x=reorder(name, mean_rating), y=mean_rating)) +
+        geom_bar(stat='identity', fill="blue") + coord_flip(y=c(0,5)) +
+        labs(x="", y="Average Rating") +
+        geom_text(aes(label=mean_rating), hjust=-0.1, size=3) +
+        scale_y_continuous(breaks=seq(0, 5, by=1)) +
+        geom_text(aes(label=vote_count), y=0.4, size=3, col="yellow")
+
+high_movies
+high_actors
+```
+
+Pretty cool! If you are going to the movies make sure it has `Josh Brolin` in it and if you are perusing Netflix try `Labor Day`!
+
